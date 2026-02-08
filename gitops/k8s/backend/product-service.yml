@@ -15,7 +15,7 @@ spec:
     spec:
       containers:
         - name: product-service
-          image: ${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com/boutique-product-service:latest
+          image: ${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com/product-service:latest
           ports:
             - containerPort: 3003
           env:

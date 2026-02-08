@@ -15,7 +15,7 @@ spec:
     spec:
       containers:
         - name: auth
-          image: ${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com/boutique-auth:latest
+          image: ${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com/auth:latest
           ports:
             - containerPort: 3002
           env:

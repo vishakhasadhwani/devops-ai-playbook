@@ -15,7 +15,7 @@ spec:
     spec:
       containers:
         - name: order-service
-          image: ${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com/boutique-order-service:latest
+          image: ${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com/order-service:latest
           ports:
             - containerPort: 3004
           env:
