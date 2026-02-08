@@ -6,8 +6,8 @@ metadata:
 spec:
   project: default
   source:
-    repoURL: 'https://github.com/<your-org>/gitops.git'
-    targetRevision: main
+    repoURL: 'https://github.com/vishakhasadhwani/DevOps-Practice-Guide.git'
+    targetRevision: project-demo
     path: boutique-microservices/k8s
   destination:
     server: 'https://kubernetes.default.svc'
