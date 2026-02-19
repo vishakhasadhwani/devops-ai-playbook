@@ -268,3 +268,9 @@ Add this to your shell profile for convenience:
 ```bash
 alias k=kubectl
 ```
+
+## Cleanup all the resources 
+
+```bash
+terraform destroy --auto-approve
+```
