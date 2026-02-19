@@ -381,4 +381,4 @@ alias k=kubectl
 terraform destroy --auto-approve
 ```
 
-### For your reference and easier implementation, the terraform.tfvars have the hardcode value in the repo inside the infrastructure folder 
+### For your reference and easier implementation, the terraform.tfvars have the hardcoded value in the repo inside the infrastructure folder 
