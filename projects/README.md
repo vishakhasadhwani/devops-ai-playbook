@@ -173,6 +173,18 @@ Check the running containers:
 docker ps
 ```
 
+### Step 6: Access the Application
+
+Once all containers are running, you can access the services at:
+
+- **Frontend Application:** http://localhost:3000 
+- **Metrics:** http://localhost:3001/metrics
+- **Product API:** http://localhost:3001/api/products
+- **Grafana (Metrics Dashboard):** http://localhost:3007
+  - Default Username: `admin`
+  - Default Password: `admin`
+- **Prometheus:** http://localhost:9090
+
 ---
 
 ## Step 1: Configure AWS CLI
