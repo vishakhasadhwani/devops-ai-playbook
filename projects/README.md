@@ -185,6 +185,11 @@ Once all containers are running, you can access the services at:
   - Default Password: `admin`
 - **Prometheus:** http://localhost:9090
 
+### Step 7: Stop the services
+
+```bash
+docker-compose -f docker-compose.yml down
+```
 ---
 
 ## Step 1: Configure AWS CLI
