@@ -55,6 +55,7 @@ resource "helm_release" "monitoring" {
   chart      = "kube-prometheus-stack"
   version    = "56.21.0"
 
+  timeout          = 600
   create_namespace = false
 
   values = [
