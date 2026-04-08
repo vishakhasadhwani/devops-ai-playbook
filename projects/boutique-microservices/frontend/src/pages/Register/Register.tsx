@@ -389,19 +389,11 @@ const Register: React.FC = () => {
                 <Button
                   type="submit"
                   variant="contained"
+                  color="secondary"
                   disabled={loading || !formData.agreeToTerms}
                   sx={{
                     px: 4,
                     py: 1.5,
-                    backgroundColor: '#d4af37 !important',
-                    color: '#1a1a1a !important',
-                    '&:hover': {
-                      backgroundColor: '#b8941f !important',
-                    },
-                    '&.Mui-disabled': {
-                      backgroundColor: 'rgba(212, 175, 55, 0.4) !important',
-                      color: 'rgba(26, 26, 26, 0.5) !important',
-                    },
                   }}
                 >
                   {loading ? 'Creating Account...' : 'Create Account'}
