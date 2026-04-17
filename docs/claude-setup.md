@@ -218,6 +218,8 @@ You should see all four servers listed as `connected`. If any show as `failed`, 
 
 ## How Claude Uses These Tools in This Project
 
+![MCP Servers overview](assets/mcp-servers.png)
+
 | Task | MCP Server Used |
 |------|----------------|
 | Check pod logs / health | `eks-mcp-server` |
