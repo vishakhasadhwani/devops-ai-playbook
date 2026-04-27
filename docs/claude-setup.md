@@ -57,51 +57,6 @@ CLAUDE.md supports nested files too — you can place a `CLAUDE.md` inside any s
 
 MCP (Model Context Protocol) servers extend Claude's capabilities beyond the built-in tools. They run as background processes and expose additional tools that Claude can call — for AWS operations, Terraform, pricing lookups, and more.
 
-MCP servers are configured in `~/.claude/settings.json`:
-
-```json
-{
-  "mcpServers": {
-    "awslabs.core-mcp-server": {
-      "command": "uvx",
-      "args": ["awslabs.core-mcp-server@latest"],
-      "env": {
-        "AWS_REGION": "us-east-1",
-        "AWS_PROFILE": "default",
-        "FASTMCP_LOG_LEVEL": "ERROR"
-      }
-    },
-    "awslabs.terraform-mcp-server": {
-      "command": "uvx",
-      "args": ["awslabs.terraform-mcp-server@latest"],
-      "env": {
-        "FASTMCP_LOG_LEVEL": "ERROR"
-      }
-    },
-    "awslabs.aws-pricing-mcp-server": {
-      "command": "uvx",
-      "args": ["awslabs.aws-pricing-mcp-server@latest"],
-      "env": {
-        "AWS_REGION": "us-east-1",
-        "FASTMCP_LOG_LEVEL": "ERROR"
-      }
-    },
-    "awslabs.eks-mcp-server": {
-      "command": "uvx",
-      "args": ["awslabs.eks-mcp-server@latest"],
-      "env": {
-        "AWS_REGION": "us-east-1",
-        "FASTMCP_LOG_LEVEL": "ERROR"
-      }
-    }
-  }
-}
-```
-
-> Replace `us-east-1` with your AWS region.
-
----
-
 ### awslabs.eks-mcp-server
 
 **What it does:** Gives Claude direct access to your EKS clusters and Kubernetes resources without needing `kubectl` installed or configured separately.
@@ -180,9 +135,59 @@ Claude will look up the Qwen model pricing and factor in the Lambda invocations 
 
 ---
 
-## Prerequisites
+## Setup Steps
 
-Install `uv` (the Python package runner used to launch MCP servers):
+### Step 1 — Install Claude Code
+
+```bash
+npm install -g @anthropic-ai/claude-code
+```
+
+Verify:
+
+```bash
+claude --version
+```
+
+Then authenticate:
+
+```bash
+claude
+```
+
+This opens a browser to log in with your Anthropic account. Once authenticated, you can run `claude` from any directory to start a session.
+
+---
+
+### Step 2 — Configure AWS Credentials
+
+The AWS MCP servers need valid credentials to access your account. If you haven't set this up:
+
+```bash
+aws configure
+```
+
+You'll be prompted for:
+- **AWS Access Key ID** — from your IAM user or role
+- **AWS Secret Access Key**
+- **Default region** — use the same region as your EKS cluster (e.g. `us-east-1`)
+- **Output format** — `json`
+
+Verify it's working:
+
+```bash
+aws sts get-caller-identity
+```
+
+You should see your account ID, user ID, and ARN returned. If this fails, the AWS MCP servers will not connect.
+
+> If you're using AWS SSO or named profiles, set `AWS_PROFILE` in `~/.claude/settings.json` to match your profile name.
+
+---
+
+### Step 3 — Install uv
+
+`uv` is the Python package runner that launches the AWS MCP servers automatically.
 
 ```bash
 # macOS
@@ -193,26 +198,118 @@ pip install uv
 ```
 
 Verify:
+
 ```bash
 uvx --version
 ```
 
-All MCP servers are fetched and run automatically by `uvx` — no separate install step needed.
+---
+
+### Step 4 — Configure MCP Servers
+
+Create or edit `~/.claude/settings.json` with the following:
+
+```json
+{
+  "mcpServers": {
+    "awslabs.core-mcp-server": {
+      "command": "uvx",
+      "args": ["awslabs.core-mcp-server@latest"],
+      "env": {
+        "AWS_REGION": "us-east-1",
+        "AWS_PROFILE": "default",
+        "FASTMCP_LOG_LEVEL": "ERROR"
+      }
+    },
+    "awslabs.terraform-mcp-server": {
+      "command": "uvx",
+      "args": ["awslabs.terraform-mcp-server@latest"],
+      "env": {
+        "FASTMCP_LOG_LEVEL": "ERROR"
+      }
+    },
+    "awslabs.aws-pricing-mcp-server": {
+      "command": "uvx",
+      "args": ["awslabs.aws-pricing-mcp-server@latest"],
+      "env": {
+        "AWS_REGION": "us-east-1",
+        "FASTMCP_LOG_LEVEL": "ERROR"
+      }
+    },
+    "awslabs.eks-mcp-server": {
+      "command": "uvx",
+      "args": ["awslabs.eks-mcp-server@latest"],
+      "env": {
+        "AWS_REGION": "us-east-1",
+        "FASTMCP_LOG_LEVEL": "ERROR"
+      }
+    }
+  }
+}
+```
+
+> Replace `us-east-1` with your AWS region. Replace `default` with your AWS profile name if using named profiles or SSO.
 
 ---
 
-## Verifying MCP Servers are Running
+### Step 5 — Install the Terraform Skill
 
-Start a Claude Code session and check which MCP servers are connected:
+Skills are domain-specific knowledge packs that give Claude deeper context for specific tools. Install the Terraform skill:
+
+```bash
+claude skills install terraform-skill
+```
+
+This gives Claude richer context for Terraform module patterns, security scanning with Checkov, testing strategies, and CI/CD workflows — beyond what's in its base training.
+
+Verify it installed:
+
+```bash
+claude skills list
+```
+
+You should see `terraform-skill` listed.
+
+---
+
+### Step 6 — Add CLAUDE.md to the Project
+
+Create a `CLAUDE.md` file at the root of the repository (already present in this project). Claude reads this automatically at the start of every session.
+
+The one used in this project puts Claude in safe execution mode — it must explain what it's doing and why before taking any action. This is especially important when working with live AWS infrastructure.
+
+You can customise it with project-specific rules:
+
+```markdown
+# Always use the boutique namespace unless told otherwise
+# Never run terraform apply without showing the plan first
+# Branch naming: feature/<name>, fix/<name>
+```
+
+---
+
+## Verifying the Setup
+
+Start a Claude Code session:
+
+```bash
+claude
+```
+
+Check which MCP servers are connected:
 
 ```
 /mcp
 ```
 
-You should see all four servers listed as `connected`. If any show as `failed`, check that:
-- `uv` is installed and on your PATH
-- Your AWS credentials are configured (`aws sts get-caller-identity`)
-- The `AWS_REGION` in your settings.json matches your target region
+You should see all four servers listed as `connected`. If any show as `failed`:
+
+| Problem | Fix |
+|---------|-----|
+| AWS server shows `failed` | Run `aws sts get-caller-identity` to verify credentials |
+| Wrong region errors | Update `AWS_REGION` in `~/.claude/settings.json` |
+| `uvx: command not found` | Run `brew install uv` |
+| Server times out on first use | Normal — `uvx` downloads the server on first run, retry after ~30s |
 
 ---
 
