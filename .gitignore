@@ -8,6 +8,11 @@ venv/
 env/
 ENV/
 
+# Node / Frontend
+node_modules/
+build/
+dist/
+
 # IDEs
 .vscode/
 .idea/
@@ -22,15 +27,26 @@ Thumbs.db
 *.tfstate
 *.tfstate.*
 .terraform/
+*.tfplan
+*.tfplan.*
+crash.log
 
 # Kubernetes
+kubeconfig
 *.kubeconfig
 
 # Docker
-.dockerignore
+*.pid
+*.seed
 
 # Logs
 *.log
 
 # Environment variables
 .env
+
+# Binaries / archives
+kubectl
+terraform
+*.zip
+*.tar.gz
