@@ -78,18 +78,27 @@ jobs:
           ACCOUNT=${{ secrets.AWS_ACCOUNT_ID }}
           REGION=${{ secrets.AWS_REGION }}
 
+          # Fix backend services
           for SERVICE in auth gateway orders order-service product-service user-service; do
             MANIFEST="gitops/k8s/backend/${SERVICE}.yml"
+            
+            # 1. First, replace the raw string placeholder if it exists
+            sed -i "s|<AWS_ACCOUNT_ID>|${ACCOUNT}|g" $MANIFEST
+            
+            # 2. Then, cleanly update the image tag to the new commit SHA
             sed -i "s|${ACCOUNT}.dkr.ecr.${REGION}.amazonaws.com/${SERVICE}:.*|${ACCOUNT}.dkr.ecr.${REGION}.amazonaws.com/${SERVICE}:${NEW_TAG}|g" $MANIFEST
           done
 
-          sed -i "s|${ACCOUNT}.dkr.ecr.${REGION}.amazonaws.com/frontend:.*|${ACCOUNT}.dkr.ecr.${REGION}.amazonaws.com/frontend:${NEW_TAG}|g" gitops/k8s/frontend/deployment.yml
+          # Fix frontend service
+          FRONTEND_MANIFEST="gitops/k8s/frontend/deployment.yml"
+          sed -i "s|<AWS_ACCOUNT_ID>|${ACCOUNT}|g" $FRONTEND_MANIFEST
+          sed -i "s|${ACCOUNT}.dkr.ecr.${REGION}.amazonaws.com/frontend:.*|${ACCOUNT}.dkr.ecr.${REGION}.amazonaws.com/frontend:${NEW_TAG}|g" $FRONTEND_MANIFEST
 
       - name: Commit and push updated manifests
         run: |
           git config user.name "github-actions"
           git config user.email "github-actions@github.com"
           git add gitops/k8s/
-          git diff --staged --quiet || git commit -m "ci: update image tags to ${{ github.sha }}"
-          git push
-
+          git diff --staged --quiet || git commit -m "ci: update image tags to ${{ github.sha }} [skip ci]"
+          git pull --rebase origin main
+          git push origin main
