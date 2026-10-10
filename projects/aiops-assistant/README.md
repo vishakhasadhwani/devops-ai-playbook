@@ -14,7 +14,9 @@ Kira agent loop (agent.py) ──► Claude on Bedrock (Converse API, tool use)
       │  runs each tool Claude asks for
       ├── fetch_logs           → Lambda → CloudWatch Logs
       ├── fetch_metrics        → in-process → Prometheus (ClusterIP, private)
-      └── fetch_service_health → in-process → EKS API + Prometheus (ClusterIP, private)
+      ├── fetch_service_health → in-process → EKS API + Prometheus (ClusterIP, private)
+      └── scale / restart / rollback_deployment
+                               → Approve / Reject in the UI → Kubernetes API (boutique only)
 ```
 
 > **Why do two tools run in-process?** Prometheus has no authentication, so it is only reachable inside the cluster (ClusterIP). Kira itself runs in EKS, so `agent.py` loads `lambda/fetch_metrics` and `lambda/fetch_health` directly and calls them at `http://kube-prometheus-stack-prometheus.monitoring.svc:9090`. Nothing about Prometheus is exposed to the internet.
@@ -129,6 +131,34 @@ Open **http://localhost:8501** in your browser.
 
 ---
 
+## Remediation (with approval)
+
+Kira can fix what it finds, but only after an engineer approves each action:
+
+| Tool | What it does |
+|------|--------------|
+| `scale_deployment` | Set replicas (1–5) |
+| `restart_deployment` | Rolling restart (like `kubectl rollout restart`) |
+| `rollback_deployment` | Previous revision (like `kubectl rollout undo`) |
+
+1. When Claude asks for one of these, the agent loop pauses (`chat()` returns a `PendingAction`). Nothing has run yet.
+2. The UI shows an approval card: the action, Kira's reason, the current state, the change, and any Argo CD warning. Chat input is disabled until the engineer clicks **Approve** or **Reject**.
+3. On approval, `remediation.execute()` re-checks the allowlist, makes the change, and waits up to 90s for the rollout. Kira then calls `fetch_service_health` and reports whether the fix worked.
+
+Every step (`proposed`, `blocked`, `approved`, `rejected`, `executed`, `failed`) is logged as one JSON line with a `kira_action` field, which Fluent Bit ships to `/eks/boutique/pods`:
+
+```bash
+aws logs filter-log-events --log-group-name /eks/boutique/pods --filter-pattern '"kira_action"'
+```
+
+**Permissions:** the `aiops-assistant` service account gets the Role in `gitops/k8s/aiops-assistant/rbac.yml`: `get`/`patch` on the 7 named deployments and their scale, `get` on their status, and `list` on ReplicaSets (for rollback). It can't touch Kira's own deployment, Postgres, or other namespaces. Locally, Kira uses your `~/.kube/config`.
+
+**GitOps rule:** Kira's changes are temporary fixes; the fix becomes permanent when someone commits it to git.
+- Scale and restart: `gitops/argo-cd.yml` tells Argo CD to ignore `/spec/replicas` and the `restartedAt` annotation, so self-heal doesn't undo them. The next sync from git (any push to `project-demo`) resets replicas to the value in git.
+- Rollback: changes the pod template, which Argo CD does track. With self-heal on, Argo CD reverts it to the image in git within seconds, so revert the bad commit in git instead. The approval card warns about this.
+
+---
+
 ## Guardrails
 
 Kira's safety and cost limits live in `guardrails.py`:
@@ -138,7 +168,7 @@ Kira's safety and cost limits live in `guardrails.py`:
 | Untrusted tool output | Every tool result is wrapped as `{"untrusted_tool_output": ...}`, and the system prompt tells Claude never to follow instructions inside it. Log lines can be written by any pod, so this defends against prompt injection. | — |
 | Token budget | Input + output tokens are counted from each Converse `usage`. Once a question reaches the budget, Kira stops with a message. | `KIRA_MAX_TOKENS_PER_QUESTION` (`100000`) |
 | Rate limit | Questions per browser session in a sliding window. "New Session" does not reset it. | `KIRA_MAX_QUESTIONS_PER_WINDOW` (`10`) per `KIRA_RATE_WINDOW_SECONDS` (`300`) |
-| Action allowlist | `check_action()` allows only scale / restart / roll back of deployments in `boutique`, with 1–5 replicas. Any write tool must call it in code. | edit `guardrails.py` |
+| Action allowlist | `check_action()` allows only scale / restart / roll back of the 7 boutique app deployments (not Kira or Postgres), with 1–5 replicas. Checked when an action is proposed and again before it runs. | edit `guardrails.py` |
 
 The prompt instruction reduces prompt-injection risk but cannot remove it, which is why write actions are checked in code.
 
@@ -158,6 +188,7 @@ aiops-assistant/
 ├── app.py                  # Streamlit chat UI
 ├── agent.py                # Kira agent loop (Claude + tools)
 ├── guardrails.py           # Untrusted-output wrapping, budgets, rate limit, allowlist
+├── remediation.py          # Write tools: scale / restart / rollback (with approval)
 ├── deploy.sh               # fetch_logs Lambda checks / configuration
 ├── setup-iam.sh            # Lambda IAM role and policies setup
 ├── requirements.txt        # Python dependencies
@@ -173,7 +204,8 @@ aiops-assistant/
 ├── scripts/
 │   └── generate_sample_data.py  # Seed CloudWatch with test errors
 └── tests/
-    └── test_guardrails.py  # Guardrail and prompt-injection tests
+    ├── test_guardrails.py  # Guardrail and prompt-injection tests
+    └── test_remediation.py # Approval flow and write tool tests
 ```
 
 ---

@@ -18,6 +18,7 @@ resources:
   - k8s/backend/user-service.yml
   - k8s/frontend/deployment.yml
   - k8s/aiops-assistant/deployment.yml
+  - k8s/aiops-assistant/rbac.yml
   - k8s/grafana-dashboard.yml
 
 configMapGenerator:

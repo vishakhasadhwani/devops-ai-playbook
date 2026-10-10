@@ -12,6 +12,14 @@ spec:
   destination:
     server: 'https://kubernetes.default.svc'
     namespace: boutique
+  # Kira's scale and restart actions (#8) are temporary fixes: don't treat them
+  # as drift for self-heal. The next sync from git still resets them.
+  ignoreDifferences:
+    - group: apps
+      kind: Deployment
+      jsonPointers:
+        - /spec/replicas
+        - /spec/template/metadata/annotations/kubectl.kubernetes.io~1restartedAt
   syncPolicy:
     automated:
       prune: true

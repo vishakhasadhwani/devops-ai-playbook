@@ -21,6 +21,7 @@ load_dotenv()
 
 from agent import KiraAgent, MODEL_ID  # noqa: E402
 from guardrails import RateLimiter, TokenBudget  # noqa: E402
+import remediation  # noqa: E402
 
 # --- Config from environment ---
 AWS_ACCESS_KEY_ID = os.getenv("AWS_ACCESS_KEY_ID")
@@ -165,6 +166,8 @@ if "converse_history" not in st.session_state:
     st.session_state.converse_history = []  # Converse API messages incl. tool calls
 if "question_times" not in st.session_state:
     st.session_state.question_times = []  # rate limit; kept across "New Session"
+if "pending" not in st.session_state:
+    st.session_state.pending = None  # write action waiting for Approve / Reject
 
 
 # --- Kira Agent ---
@@ -180,28 +183,61 @@ def get_agent():
     return KiraAgent(boto3.Session(**kwargs))
 
 
-def invoke_agent(prompt: str, status) -> str:
-    """Run one turn of the Kira agent loop, logging each tool call to `status`."""
+def _log_tool_call(status):
+    def on_tool_call(name, tool_input):
+        args = ", ".join(f"{k}={v}" for k, v in tool_input.items() if k != "reason")
+        icon = "🛠️" if name in remediation.WRITE_TOOLS else "🔧"
+        status.write(f"{icon} `{name}({args})`")
+    return on_tool_call
+
+
+def _finish(result, budget, status):
+    """Store a paused action, or return the final answer text."""
+    status.write(f"🪙 {budget.used:,} tokens used (budget {budget.limit:,})")
+    if result.pending:
+        st.session_state.pending = result.pending
+        return None
+    return result.text
+
+
+def invoke_agent(prompt: str, status):
+    """Run one turn of the Kira agent loop. Returns the answer, or None if an action awaits approval."""
     wait = RateLimiter(st.session_state.question_times).allow()
     if wait:
         return f"⚠️ Rate limit reached. Try again in {wait} seconds."
 
     history = st.session_state.converse_history
-    turn_start = len(history)
+    st.session_state.turn_start = len(history)
     history.append({"role": "user", "content": [{"text": prompt}]})
-
-    def on_tool_call(name, tool_input):
-        args = ", ".join(f"{k}={v}" for k, v in tool_input.items())
-        status.write(f"🔧 `{name}({args})`")
 
     budget = TokenBudget()
     try:
-        answer = get_agent().chat(history, on_tool_call=on_tool_call, budget=budget)
-        status.write(f"🪙 {budget.used:,} tokens used (budget {budget.limit:,})")
-        return answer
+        result = get_agent().chat(history, on_tool_call=_log_tool_call(status), budget=budget,
+                                  session_id=st.session_state.session_id)
+        return _finish(result, budget, status)
     except Exception as e:
-        del history[turn_start:]  # drop the partial turn so the next one starts clean
+        del history[st.session_state.turn_start:]  # drop the partial turn so the next one starts clean
         return f"⚠️ Error: {str(e)}"
+
+
+def resume_agent(approved: bool, status):
+    """Approve or reject the pending action and continue the paused turn."""
+    pending, st.session_state.pending = st.session_state.pending, None
+    history = st.session_state.converse_history
+    try:
+        result = get_agent().resume(history, pending, approved, on_tool_call=_log_tool_call(status),
+                                    session_id=st.session_state.session_id)
+        return _finish(result, pending.budget, status)
+    except Exception as e:
+        del history[st.session_state.turn_start:]
+        return f"⚠️ Error: {str(e)}"
+
+
+def describe_action(pending):
+    args = f"`{pending.input['deployment']}`"
+    if "replicas" in pending.input:
+        args += f" → **{pending.input['replicas']}** replicas"
+    return f"**{pending.name}** {args} in `{remediation.NAMESPACE}`"
 
 
 # --- Header ---
@@ -240,18 +276,19 @@ st.markdown(f"""
 
 
 # --- Quick Actions ---
+awaiting_approval = st.session_state.pending is not None
 col1, col2, col3, col4 = st.columns(4)
 with col1:
-    if st.button("🔴 Check 503 errors"):
+    if st.button("🔴 Check 503 errors", disabled=awaiting_approval):
         st.session_state.quick_action = "Why are we seeing 503 errors in the last hour?"
 with col2:
-    if st.button("📊 CPU & Memory"):
+    if st.button("📊 CPU & Memory", disabled=awaiting_approval):
         st.session_state.quick_action = "Check CPU and memory utilization across all services"
 with col3:
-    if st.button("🗄️ Database health"):
+    if st.button("🗄️ Database health", disabled=awaiting_approval):
         st.session_state.quick_action = "Is the database healthy? Check connections and latency"
 with col4:
-    if st.button("🔍 Recent errors"):
+    if st.button("🔍 Recent errors", disabled=awaiting_approval):
         st.session_state.quick_action = "What are the most frequent errors in the last hour?"
 
 st.markdown("<div style='height: 0.5rem'></div>", unsafe_allow_html=True)
@@ -263,12 +300,47 @@ for message in st.session_state.messages:
         st.markdown(message["content"])
 
 
+# --- Approval Card ---
+if awaiting_approval:
+    pending = st.session_state.pending
+    with st.chat_message("assistant"):
+        st.markdown(f"🛠️ Kira wants to run {describe_action(pending)}")
+        st.markdown(f"**Reason:** {pending.input['reason']}")
+        try:
+            info = remediation.preview(pending.name, pending.input)
+            st.markdown(f"**Change:** {info['change']}")
+            st.json({k: v for k, v in info.items() if k not in ("change", "warning")}, expanded=False)
+            if info["warning"]:
+                st.warning(info["warning"])
+        except Exception as e:
+            st.error(f"Could not read the current state: {e}")
+        approve_col, reject_col, _ = st.columns([1, 1, 4])
+        decision = None
+        if approve_col.button("✅ Approve"):
+            decision = True
+        if reject_col.button("❌ Reject"):
+            decision = False
+
+    if decision is not None:
+        st.session_state.messages.append({"role": "assistant", "content": (
+            f"🛠️ Proposed {describe_action(pending)} — {'✅ approved' if decision else '❌ rejected'}")})
+        with st.chat_message("assistant"):
+            label = "⚙️ Running action and verifying..." if decision else "🔍 Kira is continuing..."
+            with st.status(label, expanded=True) as status:
+                response = resume_agent(decision, status)
+                status.update(label="✅ Done", state="complete", expanded=False)
+        if response is not None:
+            st.session_state.messages.append({"role": "assistant", "content": response})
+        st.rerun()
+
+
 # --- Handle Quick Actions ---
 quick_action = st.session_state.pop("quick_action", None)
 
 
 # --- Chat Input ---
-user_input = st.chat_input("Describe the issue... e.g. 'Why is the API slow?'")
+user_input = st.chat_input("Describe the issue... e.g. 'Why is the API slow?'",
+                           disabled=awaiting_approval)
 
 prompt = quick_action or user_input
 
@@ -283,8 +355,11 @@ if prompt:
         with st.status("🔍 Kira is investigating...", expanded=True) as status:
             response = invoke_agent(prompt, status)
             status.update(label="✅ Investigation complete", state="complete", expanded=False)
-        st.markdown(response)
+        if response is not None:
+            st.markdown(response)
 
+    if response is None:
+        st.rerun()  # show the approval card
     st.session_state.messages.append({"role": "assistant", "content": response})
 
 
@@ -302,6 +377,8 @@ with st.sidebar:
     st.markdown("- 📋 `fetch_logs` — CloudWatch Logs")
     st.markdown("- 📊 `fetch_metrics` — Prometheus pod metrics")
     st.markdown("- 🏥 `fetch_service_health` — EKS cluster & pods")
+    st.markdown("**Actions (need your approval):**")
+    st.markdown("- 🛠️ `scale_deployment` / `restart_deployment` / `rollback_deployment`")
 
     st.markdown("---")
     st.markdown("**Sample Questions:**")
@@ -318,5 +395,6 @@ with st.sidebar:
     if st.button("🔄 New Session"):
         st.session_state.messages = []
         st.session_state.converse_history = []
+        st.session_state.pending = None
         st.session_state.session_id = str(uuid.uuid4())
         st.rerun()

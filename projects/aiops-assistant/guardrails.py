@@ -12,7 +12,6 @@ Limits are set with environment variables (see README.md).
 """
 
 import os
-import re
 import time
 
 MAX_TOKENS_PER_QUESTION = int(os.getenv("KIRA_MAX_TOKENS_PER_QUESTION", "100000"))
@@ -35,9 +34,12 @@ def wrap_tool_result(tool_name, result):
 
 ALLOWED_NAMESPACES = {"boutique"}
 ALLOWED_ACTIONS = {"scale_deployment", "restart_deployment", "rollback_deployment"}
+# The boutique app deployments. Not Kira itself (aiops-assistant) or Postgres.
+# Keep in sync with resourceNames in gitops/k8s/aiops-assistant/rbac.yml.
+ALLOWED_DEPLOYMENTS = {
+    "auth", "frontend", "gateway", "order-service", "orders", "product-service", "user-service",
+}
 MIN_REPLICAS, MAX_REPLICAS = 1, 5
-# Kubernetes object name (RFC 1123 label)
-_K8S_NAME = re.compile(r"^[a-z0-9]([-a-z0-9]{0,61}[a-z0-9])?$")
 
 
 class ActionNotAllowed(Exception):
@@ -50,8 +52,8 @@ def check_action(action, namespace, deployment, replicas=None):
         raise ActionNotAllowed(f"action '{action}' is not allowed")
     if namespace not in ALLOWED_NAMESPACES:
         raise ActionNotAllowed(f"namespace '{namespace}' is not allowed")
-    if not isinstance(deployment, str) or not _K8S_NAME.match(deployment):
-        raise ActionNotAllowed(f"invalid deployment name '{deployment}'")
+    if deployment not in ALLOWED_DEPLOYMENTS:
+        raise ActionNotAllowed(f"deployment '{deployment}' is not allowed")
     if action == "scale_deployment":
         if isinstance(replicas, bool) or not isinstance(replicas, int):
             raise ActionNotAllowed("replicas must be an integer")

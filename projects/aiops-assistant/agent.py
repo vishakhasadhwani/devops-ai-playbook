@@ -9,17 +9,23 @@ the tool code in lambda/ is unchanged.
 fetch_logs runs as a Lambda. fetch_metrics and fetch_service_health run inside
 this process instead, so they reach Prometheus at its private in-cluster
 (ClusterIP) address rather than through a public load balancer.
+
+Write tools (remediation.py) never run inside the loop: when Claude asks for
+one, chat() returns a PendingAction and the UI asks the engineer to approve or
+reject it, then resume() continues the turn.
 """
 
 import functools
 import importlib.util
 import json
 import os
+from dataclasses import dataclass, field
 from pathlib import Path
 
 import boto3
 
-from guardrails import TokenBudget, wrap_tool_result
+import remediation
+from guardrails import ActionNotAllowed, TokenBudget, wrap_tool_result
 
 AWS_REGION = os.getenv("AWS_REGION", "us-east-1")
 MODEL_ID = os.getenv("BEDROCK_MODEL_ID", "us.anthropic.claude-sonnet-4-6")
@@ -41,7 +47,9 @@ SYSTEM_PROMPT = """You are Kira, a senior Site Reliability Engineer with 12 year
 
 You think like a real SRE during an incident — calm, methodical, and data-driven. You never guess. You always look at the data first before drawing conclusions.
 
-You have 3 tools: fetch_logs (CloudWatch Logs), fetch_metrics (Prometheus pod metrics), and fetch_service_health (EKS cluster, node group, and pod health).
+You have 3 read tools: fetch_logs (CloudWatch Logs), fetch_metrics (Prometheus pod metrics), and fetch_service_health (EKS cluster, node group, and pod health).
+
+You also have 3 write tools for deployments in the boutique namespace: scale_deployment, restart_deployment, and rollback_deployment. Each one is shown to the engineer, who must approve it before it runs. Only propose one when the evidence clearly supports it, propose one action at a time, and give the evidence in `reason`. If the engineer rejects an action, do not propose it again; suggest alternatives. After an approved action runs, call fetch_service_health to confirm the fix and report whether it worked. Changes you make are temporary because the cluster is managed by Argo CD from git: tell the engineer which change to commit to git to make the fix permanent.
 
 When an engineer comes with a problem:
 Step 1: Understand the symptom.
@@ -93,6 +101,22 @@ def _local_handler(tool_dir):
     return module.lambda_handler
 
 
+@dataclass
+class PendingAction:
+    """A write action waiting for approval, plus the tool results of the same assistant turn."""
+    tool_use_id: str
+    name: str
+    input: dict
+    results: list = field(default_factory=list)
+    budget: TokenBudget = field(default_factory=TokenBudget)
+
+
+@dataclass
+class ChatResult:
+    text: str = None
+    pending: PendingAction = None
+
+
 class KiraAgent:
     def __init__(self, session=None):
         session = session or boto3.Session(region_name=AWS_REGION)
@@ -128,14 +152,50 @@ class KiraAgent:
         except Exception as e:
             return {"status": "error", "message": f"{type(e).__name__}: {e}"}
 
-    def chat(self, messages, on_tool_call=None, budget=None):
+    def chat(self, messages, on_tool_call=None, budget=None, session_id=None):
         """
         Run one user turn. `messages` is the Converse history ending with the new
         user message; it is extended in place with the assistant/tool turns.
         `budget` (a TokenBudget) accumulates token usage and stops the turn once
-        spent. Returns the final answer text.
+        spent. Returns a ChatResult with the final text, or a PendingAction when
+        Claude asks for a write tool (see resume()).
         """
         budget = budget if budget is not None else TokenBudget()
+        return self._run(messages, budget, on_tool_call, session_id)
+
+    def resume(self, messages, pending, approved, on_tool_call=None, session_id=None):
+        """Continue a turn paused on `pending`, running the action only if approved."""
+        if approved:
+            remediation.log_action("approved", pending.name, pending.input, session_id)
+            result = remediation.execute(pending.name, pending.input, session_id)
+        else:
+            remediation.log_action("rejected", pending.name, pending.input, session_id)
+            result = {"status": "rejected", "message": "The engineer rejected this action. Do not propose it again."}
+        pending.results.append(self._tool_result(pending.tool_use_id, pending.name, result))
+        messages.append({"role": "user", "content": pending.results})
+        return self._run(messages, pending.budget, on_tool_call, session_id)
+
+    @staticmethod
+    def _tool_result(tool_use_id, name, result):
+        return {"toolResult": {
+            "toolUseId": tool_use_id,
+            "content": [{"json": wrap_tool_result(name, result)}],
+            "status": "error" if result.get("status") == "error" else "success",
+        }}
+
+    def _propose(self, use, pending, session_id):
+        """Check a write tool request; return (PendingAction or None, error result or None)."""
+        try:
+            clean = remediation.normalize(use["name"], use["input"])
+        except ActionNotAllowed as e:
+            remediation.log_action("blocked", use["name"], use["input"], session_id, error=str(e))
+            return None, {"status": "error", "message": f"Action not allowed: {e}"}
+        if pending is not None:
+            return None, {"status": "error", "message": "Only one write action at a time. Propose it again after this one is decided."}
+        remediation.log_action("proposed", use["name"], clean, session_id)
+        return PendingAction(use["toolUseId"], use["name"], clean), None
+
+    def _run(self, messages, budget, on_tool_call, session_id):
         for _ in range(MAX_TOOL_ROUNDS):
             if budget.exceeded:
                 text = (f"⚠️ Stopped: this question used {budget.used:,} tokens, over the "
@@ -145,7 +205,7 @@ class KiraAgent:
                 modelId=MODEL_ID,
                 system=[{"text": SYSTEM_PROMPT}],
                 messages=messages,
-                toolConfig={"tools": TOOL_SPECS},
+                toolConfig={"tools": TOOL_SPECS + remediation.TOOL_SPECS},
                 inferenceConfig={"maxTokens": MAX_TOKENS},
             )
             budget.add(resp.get("usage", {}))
@@ -153,24 +213,31 @@ class KiraAgent:
             messages.append(message)
 
             if resp["stopReason"] != "tool_use":
-                return "".join(b["text"] for b in message["content"] if "text" in b)
+                return ChatResult(text="".join(b["text"] for b in message["content"] if "text" in b))
 
-            results = []
+            results, pending = [], None
             for block in message["content"]:
                 if "toolUse" not in block:
                     continue
                 use = block["toolUse"]
                 if on_tool_call:
                     on_tool_call(use["name"], use["input"])
-                result = self._call_tool(use["name"], use["input"])
-                results.append({"toolResult": {
-                    "toolUseId": use["toolUseId"],
-                    "content": [{"json": wrap_tool_result(use["name"], result)}],
-                    "status": "error" if result.get("status") == "error" else "success",
-                }})
+                if use["name"] in remediation.WRITE_TOOLS:
+                    proposal, result = self._propose(use, pending, session_id)
+                    if proposal:
+                        pending = proposal
+                        continue
+                else:
+                    result = self._call_tool(use["name"], use["input"])
+                results.append(self._tool_result(use["toolUseId"], use["name"], result))
+
+            if pending:
+                # Stop here; the UI asks for approval and calls resume().
+                pending.results, pending.budget = results, budget
+                return ChatResult(pending=pending)
             messages.append({"role": "user", "content": results})
         else:
             text = "⚠️ Stopped after too many tool calls without a final answer."
         # Keep the history valid for the next turn (must not end on a tool-result message).
         messages.append({"role": "assistant", "content": [{"text": text}]})
-        return text
+        return ChatResult(text=text)

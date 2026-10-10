@@ -8,7 +8,7 @@ WORKDIR /app
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-COPY app.py agent.py guardrails.py ./
+COPY app.py agent.py guardrails.py remediation.py ./
 COPY schemas/ schemas/
 # fetch_metrics and fetch_health run in-process (agent.py); fetch_logs stays a Lambda
 COPY lambda/fetch_metrics/lambda_function.py lambda/fetch_metrics/
