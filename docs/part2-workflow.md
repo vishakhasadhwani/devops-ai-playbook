@@ -29,7 +29,7 @@ Every change starts on a developer's machine. The full application stack runs lo
 
 ```mermaid
 flowchart TD
-    Dev[Developer writes code] --> DC[docker-compose up]
+    Dev[Developer writes code] --> DC[docker compose up]
     DC --> F[Frontend :3000]
     DC --> G[Gateway :3001]
     DC --> A[Auth :3002]
@@ -41,25 +41,40 @@ flowchart TD
     DC --> PR[Prometheus :9090]
     DC --> GR[Grafana :3007]
 
-    G --> A
-    G --> P
-    G --> OS
-    G --> O
-    G --> U
+    F -->|/api/*| G
+    G -->|/api/auth| A
+    G -->|/api/products| P
+    G -->|/api/orders| O
+    G -->|/api/users| U
+    OS --> A
+    OS --> P
     A --> DB
     P --> DB
+    OS --> DB
     O --> DB
     U --> DB
+    PR -.->|scrapes /metrics| G
+    GR --> PR
 ```
 
-Each service has its own `Dockerfile`. Docker Compose wires them together with a shared network, letting you test the full system locally before touching any cloud infrastructure.
+Each backend service has its own `Dockerfile`, which Compose builds. The frontend is different: Compose runs a stock `nginx:alpine` container that serves the pre-built React app from `frontend/build` and forwards `/api/*` calls to the gateway. Everything shares one Docker network (`boutique-network`), so you can test the full system locally before touching any cloud infrastructure.
+
+> **Note:** The gateway sends `/api/orders` to the **Orders** service (:3005). **Order Service** (:3004) isn't behind the gateway. It calls Auth and Product Service directly, and you can reach it on port 3004.
+
+**Start the stack:**
+
+```bash
+cd projects/boutique-microservices
+(cd frontend && npm install && npm run build)   # nginx serves this build output
+docker compose up -d --build
+```
 
 **What to verify locally:**
 - All containers show `Up` in `docker ps`
 - Frontend loads at http://localhost:3000
-- `/api/products` returns data via the gateway
-- Prometheus scrapes metrics from `/metrics` endpoints
-- Grafana dashboards show live data
+- `curl http://localhost:3001/api/products` returns data via the gateway
+- Prometheus targets are all `UP` at http://localhost:9090/targets (gateway plus the five backend services)
+- Grafana opens at http://localhost:3007 (admin / admin) with Prometheus already added as a data source. No dashboards are set up locally, so import one or build a panel from a query like `rate(http_requests_total[1m])`
 
 ---
 
